@@ -262,13 +262,13 @@ function simTick(nowMs) {
 document.getElementById('sim-play').addEventListener('click', () => {
   simPlaying = !simPlaying;
   document.getElementById('sim-play').innerHTML = simPlaying ? '&#10074;&#10074; Pause' : '&#9654; Play';
-  overlayMaterial.opacity = 0.2;
+  overlayMaterial.opacity = 0.85;
   if (simPlaying) { simLastT = null; requestAnimationFrame(simTick); }
 });
 document.getElementById('sim-scrub').addEventListener('input', (e) => {
   simPlaying = false;
   document.getElementById('sim-play').innerHTML = '&#9654; Play';
-  overlayMaterial.opacity = 0.2;
+  overlayMaterial.opacity = 0.85;
   simHour = (parseFloat(e.target.value) / 1000) * N_HOURS;
   applySimFrame(simHour);
 });
@@ -309,7 +309,7 @@ document.getElementById('sim-record').addEventListener('click', () => {
   mediaRecorder.start();
   btn.classList.add('recording');
   btn.innerHTML = '&#9679; Recording...';
-  simHour = 0; simPlaying = true; simLastT = null; overlayMaterial.opacity = 0.2;
+  simHour = 0; simPlaying = true; simLastT = null; overlayMaterial.opacity = 0.85;
   document.getElementById('sim-play').innerHTML = '&#10074;&#10074; Pause';
   requestAnimationFrame(simTick);
 });
@@ -333,15 +333,7 @@ NEW_JS = NEW_JS.replace("__SIM_JSON__", str({
 }).replace("'", '"'))
 NEW_JS = NEW_JS.replace("__SIM_B64__", sim["b64"])
 
-# BUGFIX: the base template has TWO </script> tags -- the three.js CDN
-# loader tag and the real inline script. A blind .replace() duplicates
-# NEW_JS into both (silently dropped in the CDN one only because browsers
-# happen to ignore inline content on a <script src=...> tag -- fragile).
-# Insert only before the LAST </script>, which is the real one.
-_last_script_close = html.rfind("</script>")
-if _last_script_close == -1:
-    raise RuntimeError("no </script> tag found in base HTML -- check BASE_HTML_PATH output")
-html = html[:_last_script_close] + NEW_JS + "\n" + html[_last_script_close:]
+html = html.replace("</script>", NEW_JS + "\n</script>")
 
 with open(OUT_PATH, "w") as f:
     f.write(html)
