@@ -6,8 +6,9 @@ import base64
 import numpy as np
 
 
-def pack_simulation(npz_path, fs_max_display=3.0, depth_max_display=10.0,
-                     erosion_max_display=5.0, failure_depth_m=1.5):
+def pack_simulation(npz_path, fs_max_display=3.0, depth_max_display=None,
+                     erosion_max_display=None, failure_depth_m=1.5,
+                     min_display_range_m=0.05):
     d = np.load(npz_path)
     fs = d["fs_series"]              # [24, n]
     depth = d["flow_depth_series"]   # [24, n]
@@ -21,6 +22,25 @@ def pack_simulation(npz_path, fs_max_display=3.0, depth_max_display=10.0,
     # failure_depth_m of material permanently removed from that point on
     ever_failed_by_hour = np.minimum.accumulate(fs, axis=0) < 1.0   # [24, n] bool
     erosion_series = ever_failed_by_hour.astype(np.float32) * failure_depth_m
+
+    # BUGFIX: depth_max_display/erosion_max_display used to be hardcoded
+    # guesses (10.0 / 5.0 m). If the actual simulated depth/erosion never
+    # gets close to those numbers, the uint8 quantization below rounds
+    # almost everything to 0 and the 3D terrain barely moves during
+    # playback ("collapse doesn't work"). Auto-scale to the observed max
+    # instead, so the full 0-255 range -- and therefore the full visible
+    # vertical displacement -- is always used. Explicit values passed in
+    # still override this.
+    observed_depth_max = float(depth.max()) if depth.size else 0.0
+    observed_erosion_max = float(erosion_series.max()) if erosion_series.size else 0.0
+    if depth_max_display is None:
+        depth_max_display = max(observed_depth_max, min_display_range_m)
+    if erosion_max_display is None:
+        erosion_max_display = max(observed_erosion_max, min_display_range_m)
+    print(f"[pack_simulation] observed max depth={observed_depth_max:.3f} m, "
+          f"max erosion={observed_erosion_max:.3f} m -> using "
+          f"depth_max_display={depth_max_display:.3f}, "
+          f"erosion_max_display={erosion_max_display:.3f}")
 
     fs_q = np.clip(fs / fs_max_display, 0, 1) * 255
     fs_q = fs_q.astype(np.uint8)
