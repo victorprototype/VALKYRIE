@@ -85,7 +85,7 @@ NEW_JS = r"""
 const SIM = __SIM_JSON__;
 const SIM_B64 = "__SIM_B64__";
 
-# NEW
+
 function b64ToUint8(b64) {
   const binary = atob(b64);
   const len = binary.length;
@@ -121,13 +121,27 @@ function applyCollapseFrame(hourFloat) {
 
 // overlay mesh sharing the SAME geometry as the terrain, so vertical
 // exaggeration changes on the terrain automatically apply here too
-const overlayColors = new Float32Array(N_NODES * 3);
-if (!geometry.attributes.color) {
-  geometry.setAttribute('color', new THREE.BufferAttribute(overlayColors, 3));
-}
-const overlayMaterial = new THREE.MeshBasicMaterial({
-  vertexColors: true, transparent: true, opacity: 0.0,
-  side: THREE.DoubleSide, depthWrite: false,
+const overlayColors = new Float32Array(N_NODES * 4);
+geometry.setAttribute('color', new THREE.BufferAttribute(overlayColors, 4));
+
+const overlayMaterial = new THREE.ShaderMaterial({
+  transparent: true,
+  depthWrite: false,
+  side: THREE.DoubleSide,
+  vertexShader: `
+    attribute vec4 color;
+    varying vec4 vColor;
+    void main() {
+      vColor = color;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: `
+    varying vec4 vColor;
+    void main() {
+      gl_FragColor = vColor;
+    }
+  `
 });
 const overlayMesh = new THREE.Mesh(geometry, overlayMaterial);
 overlayMesh.renderOrder = 1;
@@ -135,28 +149,34 @@ scene.add(overlayMesh);
 
 function riskColor(fs01, depth01, out) {
   // fs01: 0..1 (0=very unstable, 1=very stable, already normalized)
-  // 3-stop gradient: red -> yellow -> green
-  let r, g, b;
+  // Only failing/marginal ground gets drawn; stable ground is fully
+  // transparent so the DEM texture stays visible underneath.
+  let r, g, b, a;
   if (fs01 < 0.4) {
-    const t = fs01 / 0.4;
-    r = 0.753 + t * (0.831 - 0.753); g = 0.161 + t * (0.722 - 0.161); b = 0.169 + t * (0.247 - 0.169);
+    r = 0.831; g = 0.180; b = 0.180; // solid red
+    a = 1.0;
+  } else if (fs01 < 0.6) {
+    const t = (fs01 - 0.4) / 0.2; // 0 at edge of failing, 1 at edge of stable
+    r = 0.831; g = 0.180; b = 0.180;
+    a = 1.0 - t; // fade out toward stable
   } else {
-    const t = Math.min(1, (fs01 - 0.4) / 0.6);
-    r = 0.831 + t * (0.180 - 0.831); g = 0.722 + t * (0.490 - 0.722); b = 0.247 + t * (0.310 - 0.247);
+    r = 0; g = 0; b = 0; a = 0.0; // stable ground: invisible
   }
+
   if (depth01 > 0.02) {
     const dt = Math.min(1, depth01 * 2.0);
     r = r * (1 - dt) + 0.541 * dt;
     g = g * (1 - dt) + 0.353 * dt;
     b = b * (1 - dt) + 0.231 * dt;
+    a = Math.max(a, dt); // mobile debris always shows, even if FS recovered
   }
-  out[0] = r; out[1] = g; out[2] = b;
+  out[0] = r; out[1] = g; out[2] = b; out[3] = a;
 }
 
 let simPlaying = false;
 let simHour = 0.0;   // fractional hour, 0..24
 const SIM_DURATION_S = 30.0;
-const tmpColor = [0, 0, 0];
+const tmpColor = [0, 0, 0, 0];
 
 function applySimFrame(hourFloat) {
   const h0 = Math.max(0, Math.min(N_HOURS - 1, Math.floor(hourFloat)));
@@ -170,9 +190,9 @@ function applySimFrame(hourFloat) {
     const fs01 = ((fsA * (1 - frac) + fsB * frac) / 255);
     const depth01 = ((dpA * (1 - frac) + dpB * frac) / 255);
     riskColor(fs01, depth01, tmpColor);
-    colorAttr.setXYZ(i, tmpColor[0], tmpColor[1], tmpColor[2]);
+    colorAttr.setXYZW(i, tmpColor[0], tmpColor[1], tmpColor[2], tmpColor[3]);
   }
-  # NEW
+  
   colorAttr.needsUpdate = true;
   applyCollapseFrame(hourFloat);
 
@@ -294,7 +314,7 @@ document.getElementById('sim-record').addEventListener('click', () => {
   requestAnimationFrame(simTick);
 });
 
-# NEW
+
 applySimFrame(0);
 
 const exaggSliderEl = document.getElementById('exagg');
