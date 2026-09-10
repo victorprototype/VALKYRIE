@@ -303,10 +303,13 @@ if (exaggSliderEl) {
 }
 """
 
+# NEW
 NEW_JS = NEW_JS.replace("__SIM_JSON__", str({
     "n_hours": sim["n_hours"], "n_nodes": sim["n_nodes"],
     "failed_frac_per_hour": sim["failed_frac_per_hour"],
     "hourly_rain_mm": sim["hourly_rain_mm"],
+    "depth_max_display": sim["depth_max_display"],
+    "erosion_max_display": sim["erosion_max_display"],
 }).replace("'", '"'))
 NEW_JS = NEW_JS.replace("__SIM_B64__", sim["b64"])
 
