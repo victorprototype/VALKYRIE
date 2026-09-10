@@ -1,10 +1,10 @@
 import re
 from pack_simulation_data import pack_simulation
 
-BASE_HTML_PATH = "/home/claude/physics/base_viewer.html"
-OUT_PATH = "/home/claude/physics/dem_3d_viewer_simulation.html"
+BASE_HTML_PATH = "/kaggle/working/valkyrie/physics/dem_3d_viewer.html"
+OUT_PATH = "/kaggle/working/valkyrie/physics/dem_3d_viewer_simulation.html"
 
-sim = pack_simulation("/home/claude/physics/simulation_24h.npz")
+sim = pack_simulation("/kaggle/working/valkyrie/physics/simulation_24h.npz")
 
 html = open(BASE_HTML_PATH).read()
 

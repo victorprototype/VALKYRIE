@@ -22,8 +22,8 @@ import sys
 import time
 import numpy as np
 
-sys.path.insert(0, "/home/claude/graph")
-sys.path.insert(0, "/home/claude/dem3d")
+sys.path.insert(0, "/kaggle/working/valkyrie/graph")
+sys.path.insert(0, "/kaggle/working/valkyrie/dem3d")
 
 import build_graph as bg
 from soil_ptf import (soilgrids_to_fractions, saxton_rawls_hydraulic,
@@ -32,9 +32,9 @@ from resample_to_grid import resample_soilgrids_to_points, resample_chirps_to_po
 from trigrs_physics import pressure_head_transient, factor_of_safety
 from voellmy_runout import route_failures
 
-DATA_DIR = "/home/claude/dem3d/dotnames"
+DATA_DIR = "/kaggle/input/datasets/thevictorprototype/dem-sim-data"
 SOILGRIDS_FILE = f"{DATA_DIR}/soilgrids_mandakini.tif"
-CHIRPS_FILE = f"{DATA_DIR}/chirps-v3_0_sat_2013_06_17.tif"
+CHIRPS_FILE = f"{DATA_DIR}/chirps-v3.0.sat.2013.06.17.tif"
 
 FAILURE_DEPTH_M = 1.5          # assumed uniform shallow-failure slip depth
 INITIAL_WATER_TABLE_M = 2.0    # assumed -- no field data available
@@ -134,7 +134,7 @@ def main():
     print(f"  done in {time.time()-t0:.2f}s")
 
     np.savez_compressed(
-        "/home/claude/physics/simulation_24h.npz",
+        "/kaggle/working/valkyrie/physics/simulation_24h.npz",
         psi_series=psi_series, fs_series=fs_series,
         flow_depth_series=flow_depth_series, cum_erosion=cum_erosion,
         precip_mm=precip_mm, storm_shape=storm_shape,

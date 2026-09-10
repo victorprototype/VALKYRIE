@@ -21,8 +21,8 @@ from soil_ptf import (soilgrids_to_fractions, saxton_rawls_hydraulic,
                        usda_texture_class, texture_to_strength, bulk_density_to_unit_weight)
 from resample_to_grid import resample_soilgrids_to_points, resample_chirps_to_points
 
-SOILGRIDS_PATH = "/kaggle/input/datasets/rdvijaianand/dem-data/soilgrids_mandakini.tif"
-CHIRPS_PATH = "/kaggle/input/datasets/rdvijaianand/dem-data/chirps-v3_0_sat_2013_06_17.tif"
+SOILGRIDS_PATH = "/kaggle/input/datasets/thevictorprototype/dem-sim-data/soilgrids_mandakini.tif"
+CHIRPS_PATH = "/kaggle/input/datasets/thevictorprototype/dem-sim-data/chirps-v3.0.sat.2013.06.17.tif"
 # Edit the two paths above to match where you've placed these files on
 # Kaggle (or wherever you're running this) -- they aren't auto-discovered
 # the way build_graph.py's DEM/hydro files are, since they didn't come
@@ -104,7 +104,7 @@ if __name__ == "__main__":
         col = g["x"][:, i]
         print(f"{name:28s} min={col.min():>12.4f} max={col.max():>12.4f} nan={np.isnan(col).sum()}")
     np.savez_compressed(
-        "/home/claude/graph/unified_graph_v2.npz",
+        "/kaggle/working/valkyrie/graph/unified_graph_v2.npz",
         pos=g["pos"], x=g["x"], edge_index=g["edge_index"], edge_attr=g["edge_attr"],
         grid_shape=g["grid_shape"], feature_names=np.array(g["feature_names"]),
         lon_grid=g["lon_grid"], lat_grid=g["lat_grid"],

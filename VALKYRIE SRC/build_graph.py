@@ -25,7 +25,7 @@ import numpy as np
 from PIL import Image
 
 Image.MAX_IMAGE_PIXELS = None
-SRC = "/mnt/user-data/uploads"
+SRC = "/kaggle/input/datasets/thevictorprototype/dem-sim-data"
 
 # Same downsample target as the 3D viewer, so this graph lines up 1:1 with
 # what's rendered there if we ever want to cross-reference a node to a
@@ -40,9 +40,9 @@ def load(name):
 
 def build_graph():
     dem = load("output_hh.tif").astype(np.float32)
-    slope = load("viz_hh_slope.tif").astype(np.float32)
-    aspect = load("viz_hh_aspect.tif").astype(np.float32)
-    roughness = load("viz_hh_roughness.tif").astype(np.float32)
+    slope = load("viz.hh_slope.tif").astype(np.float32)
+    aspect = load("viz.hh_aspect.tif").astype(np.float32)
+    roughness = load("viz.hh_roughness.tif").astype(np.float32)
     twi = load("TWI.tif").astype(np.float32)
     flow_accum = load("D8_Flow_Accumulation.tif").astype(np.float32)
     sca = load("DInf_Specific_Catchment_Area.tif").astype(np.float32)
@@ -159,7 +159,7 @@ if __name__ == "__main__":
     print("feature order:", graph["feature_names"])
     print("grid shape:", graph["grid_shape"])
     np.savez_compressed(
-        "/home/claude/graph/unified_graph.npz",
+        "/kaggle/working/valkyrie/graph/unified_graph.npz",
         pos=graph["pos"], x=graph["x"], edge_index=graph["edge_index"],
         edge_attr=graph["edge_attr"], grid_shape=graph["grid_shape"],
         feature_names=np.array(graph["feature_names"]),

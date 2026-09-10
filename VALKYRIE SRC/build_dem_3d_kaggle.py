@@ -34,8 +34,8 @@ Image.MAX_IMAGE_PIXELS = None
 # ---------------------------------------------------------------------------
 # Config -- edit these for your environment
 # ---------------------------------------------------------------------------
-DATA_DIR = "/kaggle/input/datasets/rdvijaianand/dem-data"
-OUT_PATH = "/kaggle/working/dem_3d_viewer.html"
+DATA_DIR = "/kaggle/input/datasets/thevictorprototype/dem-sim-data"
+OUT_PATH = "/kaggle/working/valkyrie/physics/dem_3d_viewer.html"
 
 FILES = {
     "dem": "output_hh.tif",
@@ -63,7 +63,7 @@ OPTIONAL_FILES = {
 # pixel grid or CRS, so they go through a resampling step (see
 # resample_to_grid.py) rather than the simple crop-and-slice OPTIONAL_FILES
 # path above. Set either to None to skip it.
-CHIRPS_FILE = "chirps-v3_0_sat_2013_06_17.tif"
+CHIRPS_FILE = "chirps-v3.0.sat.2013.06.17.tif"
 SOILGRIDS_FILE = "soilgrids_mandakini.tif"
 
 BORDER_CROP = 6          # trim gdaldem's nodata edge ring (px)
