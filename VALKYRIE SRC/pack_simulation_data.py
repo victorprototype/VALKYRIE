@@ -49,7 +49,7 @@ def pack_simulation(npz_path, fs_max_display=3.0, depth_max_display=10.0,
 
 
 if __name__ == "__main__":
-    p = pack_simulation("/kaggle/working/valkyrie/physics/simulation_24h.npz")
+     p = pack_simulation("/kaggle/working/valkyrie/physics/simulation_24h.npz")
     print("packed bytes (raw):", len(p["b64"]) * 3 // 4)
     print("n_hours", p["n_hours"], "n_nodes", p["n_nodes"])
     print("failed_frac_per_hour:", [f"{x:.3f}" for x in p["failed_frac_per_hour"]])
