@@ -66,6 +66,7 @@ NEW_PANEL_HTML = r"""
       <div><span class="sim-swatch" style="background:#d4b83f"></span>marginal (FS&approx;1.2)</div>
       <div><span class="sim-swatch" style="background:#c0392b"></span>failing (FS&lt;1)</div>
       <div><span class="sim-swatch" style="background:#8a5a3b"></span>mobile debris (Voellmy runout)</div>
+      <div><span class="sim-swatch" style="background:#705433"></span>scar (failed at some point, final extent)</div>
     </div>
     <div id="sim-caveat">
       Demonstration methodology, not a validated hazard forecast: initial water table depth,
@@ -84,6 +85,7 @@ NEW_JS = r"""
 // =========================== 24h SIMULATION LAYER ===========================
 const SIM = __SIM_JSON__;
 const SIM_B64 = "__SIM_B64__";
+const SIM_EROSION_B64 = "__SIM_EROSION_B64__";
 
 function b64ToUint8(b64) {
   const binary = atob(b64);
@@ -95,6 +97,13 @@ function b64ToUint8(b64) {
 // packed layout: [hour][node][2] -> (fs_byte, depth_byte), row-major
 const simPacked = b64ToUint8(SIM_B64);
 const N_HOURS = SIM.n_hours, N_NODES = SIM.n_nodes;
+
+// static per-node total accumulated slip depth (NOT a per-hour series --
+// route_failures() in voellmy_runout.py only returns the final running
+// total, so this is the end-of-simulation scar extent, not something that
+// can animate progressively frame-by-frame yet)
+const erosionPacked = b64ToUint8(SIM_EROSION_B64);
+function erosionByteAt(nodeIdx) { return erosionPacked[nodeIdx]; }
 
 function simByteAt(hourIdx, nodeIdx, channel) {
   return simPacked[(hourIdx * N_NODES + nodeIdx) * 2 + channel];
@@ -128,7 +137,7 @@ const overlayMesh = new THREE.Mesh(geometry, overlayMaterial);
 overlayMesh.renderOrder = 1;
 scene.add(overlayMesh);
 
-function riskColor(fs01, depth01, out) {
+function riskColor(fs01, depth01, erosion01, out) {
   // fs01: 0..1 (0=very unstable, 1=very stable, already normalized)
   // Only failing/marginal ground gets drawn; stable ground is fully
   // transparent so the DEM texture stays visible underneath.
@@ -142,6 +151,18 @@ function riskColor(fs01, depth01, out) {
     a = 1.0 - t; // fade out toward stable
   } else {
     r = 0; g = 0; b = 0; a = 0.0; // stable ground: invisible
+  }
+
+  // permanent low-opacity scar: ground that has failed at ANY point in the
+  // run, shown faintly even after debris has moved on and FS has nominally
+  // "recovered" -- this is a static end-state extent (see erosionByteAt),
+  // not something that grows hour-by-hour with the rest of the playback
+  if (erosion01 > 0.03 && a < 0.25) {
+    const et = Math.min(1, erosion01 * 1.5) * 0.22;
+    r = r * (1 - et) + 0.44 * et;
+    g = g * (1 - et) + 0.33 * et;
+    b = b * (1 - et) + 0.20 * et;
+    a = Math.max(a, et);
   }
 
   if (depth01 > 0.02) {
@@ -170,7 +191,8 @@ function applySimFrame(hourFloat) {
     const dpA = simByteAt(h0, i, 1), dpB = simByteAt(h1, i, 1);
     const fs01 = ((fsA * (1 - frac) + fsB * frac) / 255);
     const depth01 = ((dpA * (1 - frac) + dpB * frac) / 255);
-    riskColor(fs01, depth01, tmpColor);
+    const erosion01 = erosionByteAt(i) / 255;
+    riskColor(fs01, depth01, erosion01, tmpColor);
     colorAttr.setXYZW(i, tmpColor[0], tmpColor[1], tmpColor[2], tmpColor[3]);
   }
   colorAttr.needsUpdate = true;
@@ -305,6 +327,7 @@ NEW_JS = NEW_JS.replace("__SIM_JSON__", str({
     "erosion_max_display": sim["erosion_max_display"],
 }).replace("'", '"'))
 NEW_JS = NEW_JS.replace("__SIM_B64__", sim["b64"])
+NEW_JS = NEW_JS.replace("__SIM_EROSION_B64__", sim["erosion_b64"])
 
 html = html.replace("</script>", NEW_JS + "\n</script>")
 
