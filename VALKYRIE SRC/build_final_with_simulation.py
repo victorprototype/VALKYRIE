@@ -85,7 +85,6 @@ NEW_JS = r"""
 const SIM = __SIM_JSON__;
 const SIM_B64 = "__SIM_B64__";
 
-
 function b64ToUint8(b64) {
   const binary = atob(b64);
   const len = binary.length;
@@ -93,30 +92,12 @@ function b64ToUint8(b64) {
   for (let i = 0; i < len; i++) buf[i] = binary.charCodeAt(i);
   return buf;
 }
-// packed layout: [hour][node][3] -> (fs_byte, depth_byte, erosion_byte), row-major
+// packed layout: [hour][node][2] -> (fs_byte, depth_byte), row-major
 const simPacked = b64ToUint8(SIM_B64);
 const N_HOURS = SIM.n_hours, N_NODES = SIM.n_nodes;
-const N_CHANNELS = 3;
 
 function simByteAt(hourIdx, nodeIdx, channel) {
-  return simPacked[(hourIdx * N_NODES + nodeIdx) * N_CHANNELS + channel];
-}
-
-function applyCollapseFrame(hourFloat) {
-  const h0 = Math.max(0, Math.min(N_HOURS - 1, Math.floor(hourFloat)));
-  const h1 = Math.min(N_HOURS - 1, h0 + 1);
-  const frac = Math.max(0, Math.min(1, hourFloat - h0));
-
-  for (let i = 0; i < N_NODES; i++) {
-    const dpA = simByteAt(h0, i, 1), dpB = simByteAt(h1, i, 1);
-    const erA = simByteAt(h0, i, 2), erB = simByteAt(h1, i, 2);
-    const depth_m = ((dpA * (1 - frac) + dpB * frac) / 255) * SIM.depth_max_display;
-    const erosion_m = ((erA * (1 - frac) + erB * frac) / 255) * SIM.erosion_max_display;
-    const delta = depth_m - erosion_m;  // debris piles up, erosion carves down
-    posAttr.setY(i, (heights[i] + delta - elevMin) * currentExagg);
-  }
-  posAttr.needsUpdate = true;
-  geometry.computeVertexNormals();
+  return simPacked[(hourIdx * N_NODES + nodeIdx) * 2 + channel];
 }
 
 // overlay mesh sharing the SAME geometry as the terrain, so vertical
@@ -192,9 +173,7 @@ function applySimFrame(hourFloat) {
     riskColor(fs01, depth01, tmpColor);
     colorAttr.setXYZW(i, tmpColor[0], tmpColor[1], tmpColor[2], tmpColor[3]);
   }
-  
   colorAttr.needsUpdate = true;
-  applyCollapseFrame(hourFloat);
 
   const hIdx = Math.min(N_HOURS - 1, Math.round(hourFloat));
   document.getElementById('sim-hour').textContent = hourFloat.toFixed(1);
@@ -314,13 +293,7 @@ document.getElementById('sim-record').addEventListener('click', () => {
   requestAnimationFrame(simTick);
 });
 
-
 applySimFrame(0);
-
-const exaggSliderEl = document.getElementById('exagg');
-if (exaggSliderEl) {
-  exaggSliderEl.addEventListener('input', () => applyCollapseFrame(simHour));
-}
 """
 
 # NEW
