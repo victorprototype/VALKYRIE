@@ -122,20 +122,35 @@ const overlayMesh = new THREE.Mesh(geometry, overlayMaterial);
 overlayMesh.renderOrder = 1;
 scene.add(overlayMesh);
 
+// Tune this: overall strength of the risk overlay. Lower = more of the
+// underlying DEM texture shows through everywhere, including failing ground.
+const RISK_ALPHA_MAX = 0.55;
+
 function riskColor(fs01, depth01, erosion01, out) {
-  // fs01: stored FS / fs_max_display. Only failing/marginal ground is drawn;
-  // stable ground is fully transparent so the DEM texture shows through.
-  let r, g, b, a;
+  // fs01: stored FS / fs_max_display. Three-stop gradient (red -> yellow ->
+  // green) matching the sim-panel legend swatches, rather than a hard
+  // red/transparent switch -- avoids the "every failing node is a flat,
+  // overly bright red" look.
+  let r, g, b;
   if (fs01 < FS01_FAILING) {
-    r = 0.831; g = 0.180; b = 0.180; // solid red
-    a = 1.0;
-  } else if (fs01 < FS01_STABLE) {
-    const t = (fs01 - FS01_FAILING) / (FS01_STABLE - FS01_FAILING);
-    r = 0.831; g = 0.180; b = 0.180;
-    a = 1.0 - t; // fade out toward stable
+    // red (#C0392B) -> yellow (#D4B83F)
+    const t = Math.min(1, fs01 / FS01_FAILING);
+    r = 0.753 + t * (0.831 - 0.753);
+    g = 0.161 + t * (0.722 - 0.161);
+    b = 0.169 + t * (0.247 - 0.169);
   } else {
-    r = 0; g = 0; b = 0; a = 0.0; // stable ground: invisible
+    // yellow (#D4B83F) -> green (#2E7D4F), reaching full green at FS01_STABLE
+    const t = Math.min(1, (fs01 - FS01_FAILING) / (FS01_STABLE - FS01_FAILING));
+    r = 0.831 + t * (0.180 - 0.831);
+    g = 0.722 + t * (0.490 - 0.722);
+    b = 0.247 + t * (0.310 - 0.247);
   }
+  // alpha ramps down from RISK_ALPHA_MAX at failing to 0 at/after stable,
+  // instead of a flat 1.0 -- this is what actually lets the DEM texture
+  // show through failing ground rather than painting it a solid color
+  let a = fs01 < FS01_STABLE
+    ? RISK_ALPHA_MAX * (1.0 - Math.min(1, fs01 / FS01_STABLE))
+    : 0.0;
 
   // permanent low-opacity scar: ground that has failed at ANY point in the
   // run, shown faintly even after debris has moved on and FS has nominally
