@@ -10,6 +10,7 @@ Order of operations matters:
 Step 3 wipes whatever the base viewer put in <style>, so it must come after
 everything else, and no other step may rely on the base viewer's CSS.
 """
+import json
 from pack_simulation_data import pack_simulation
 
 BASE_HTML_PATH = "/kaggle/working/valkyrie/physics/dem_3d_viewer.html"
@@ -18,7 +19,8 @@ SIM_NPZ_PATH = "/kaggle/working/valkyrie/physics/simulation_24h.npz"
 
 sim = pack_simulation(SIM_NPZ_PATH)
 
-html = open(BASE_HTML_PATH).read()
+with open(BASE_HTML_PATH, encoding="utf-8") as f:
+    html = f.read()
 
 # ---------------- simulation / timelapse panel ----------------
 NEW_PANEL_HTML = r"""
@@ -43,7 +45,6 @@ NEW_PANEL_HTML = r"""
       <div><span class="sim-swatch" style="background:#d4b83f"></span>marginal (FS&approx;1.2)</div>
       <div><span class="sim-swatch" style="background:#c0392b"></span>failing (FS&lt;1)</div>
       <div><span class="sim-swatch" style="background:#8a5a3b"></span>mobile debris (Voellmy runout)</div>
-      <div><span class="sim-swatch" style="background:#705433"></span>scar (failed at some point, final extent)</div>
     </div>
     <div id="sim-caveat">
       Demonstration methodology, not a validated hazard forecast: initial water table depth,
@@ -86,98 +87,49 @@ function simByteAt(hourIdx, nodeIdx, channel) {
   return simPacked[(hourIdx * N_NODES + nodeIdx) * 2 + channel];
 }
 
-// FS colour thresholds derived from the quantisation scale actually used by
-// pack_simulation(), rather than hardcoded against an assumed 3.0. fs01 is
-// the stored byte / 255, i.e. FS / fs_max_display, so an absolute FS value
-// maps to fs01 = FS / fs_max_display.
-const FS_MAX_DISPLAY = SIM.fs_max_display;
-const FS01_FAILING = 1.0 / FS_MAX_DISPLAY;   // FS = 1.0 -> fully opaque red
-const FS01_STABLE  = 1.8 / FS_MAX_DISPLAY;   // FS >= 1.8 -> fully transparent
-
 // overlay mesh sharing the SAME geometry as the terrain, so vertical
 // exaggeration changes on the terrain automatically apply here too
-const overlayColors = new Float32Array(N_NODES * 4);
-geometry.setAttribute('color', new THREE.BufferAttribute(overlayColors, 4));
-
-const overlayMaterial = new THREE.ShaderMaterial({
-  transparent: true,
-  depthWrite: false,
-  side: THREE.DoubleSide,
-  vertexShader: `
-    attribute vec4 color;
-    varying vec4 vColor;
-    void main() {
-      vColor = color;
-      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-    }
-  `,
-  fragmentShader: `
-    varying vec4 vColor;
-    void main() {
-      gl_FragColor = vColor;
-    }
-  `
+const overlayColors = new Float32Array(N_NODES * 3);
+if (!geometry.attributes.color) {
+  geometry.setAttribute('color', new THREE.BufferAttribute(overlayColors, 3));
+}
+const overlayMaterial = new THREE.MeshBasicMaterial({
+  vertexColors: true, transparent: true, opacity: 0.0,
+  side: THREE.DoubleSide, depthWrite: false,
 });
 const overlayMesh = new THREE.Mesh(geometry, overlayMaterial);
 overlayMesh.renderOrder = 1;
 scene.add(overlayMesh);
 
-// Tune this: overall strength of the risk overlay. Lower = more of the
-// underlying DEM texture shows through everywhere, including failing ground.
-const RISK_ALPHA_MAX = 0.55;
+// Overall overlay strength. Matches the reference HTML exactly: the overlay is a
+// MeshBasicMaterial (vec3 vertex colours, no per-vertex alpha), so opacity is a
+// single material-level value.
+const OVERLAY_OPACITY = 0.85;
 
-function riskColor(fs01, depth01, erosion01, out) {
-  // fs01: stored FS / fs_max_display. Three-stop gradient (red -> yellow ->
-  // green) matching the sim-panel legend swatches, rather than a hard
-  // red/transparent switch -- avoids the "every failing node is a flat,
-  // overly bright red" look.
+function riskColor(fs01, depth01, out) {
+  // fs01: 0..1 (0=very unstable, 1=very stable, already normalized)
+  // 3-stop gradient: red -> yellow -> green
   let r, g, b;
-  if (fs01 < FS01_FAILING) {
-    // red (#C0392B) -> yellow (#D4B83F)
-    const t = Math.min(1, fs01 / FS01_FAILING);
-    r = 0.753 + t * (0.831 - 0.753);
-    g = 0.161 + t * (0.722 - 0.161);
-    b = 0.169 + t * (0.247 - 0.169);
+  if (fs01 < 0.4) {
+    const t = fs01 / 0.4;
+    r = 0.753 + t * (0.831 - 0.753); g = 0.161 + t * (0.722 - 0.161); b = 0.169 + t * (0.247 - 0.169);
   } else {
-    // yellow (#D4B83F) -> green (#2E7D4F), reaching full green at FS01_STABLE
-    const t = Math.min(1, (fs01 - FS01_FAILING) / (FS01_STABLE - FS01_FAILING));
-    r = 0.831 + t * (0.180 - 0.831);
-    g = 0.722 + t * (0.490 - 0.722);
-    b = 0.247 + t * (0.310 - 0.247);
+    const t = Math.min(1, (fs01 - 0.4) / 0.6);
+    r = 0.831 + t * (0.180 - 0.831); g = 0.722 + t * (0.490 - 0.722); b = 0.247 + t * (0.310 - 0.247);
   }
-  // alpha ramps down from RISK_ALPHA_MAX at failing to 0 at/after stable,
-  // instead of a flat 1.0 -- this is what actually lets the DEM texture
-  // show through failing ground rather than painting it a solid color
-  let a = fs01 < FS01_STABLE
-    ? RISK_ALPHA_MAX * (1.0 - Math.min(1, fs01 / FS01_STABLE))
-    : 0.0;
-
-  // permanent low-opacity scar: ground that has failed at ANY point in the
-  // run, shown faintly even after debris has moved on and FS has nominally
-  // "recovered" -- this is a static end-state extent (see erosionByteAt),
-  // not something that grows hour-by-hour with the rest of the playback
-  if (erosion01 > 0.03 && a < 0.25) {
-    const et = Math.min(1, erosion01 * 1.5) * 0.22;
-    r = r * (1 - et) + 0.44 * et;
-    g = g * (1 - et) + 0.33 * et;
-    b = b * (1 - et) + 0.20 * et;
-    a = Math.max(a, et);
-  }
-
   if (depth01 > 0.02) {
     const dt = Math.min(1, depth01 * 2.0);
     r = r * (1 - dt) + 0.541 * dt;
     g = g * (1 - dt) + 0.353 * dt;
     b = b * (1 - dt) + 0.231 * dt;
-    a = Math.max(a, dt); // mobile debris always shows, even if FS recovered
   }
-  out[0] = r; out[1] = g; out[2] = b; out[3] = a;
+  out[0] = r; out[1] = g; out[2] = b;
 }
 
 let simPlaying = false;
 let simHour = 0.0;   // fractional hour, 0..24
 const SIM_DURATION_S = 30.0;
-const tmpColor = [0, 0, 0, 0];
+const tmpColor = [0, 0, 0];
 
 function applySimFrame(hourFloat) {
   const h0 = Math.max(0, Math.min(N_HOURS - 1, Math.floor(hourFloat)));
@@ -190,9 +142,8 @@ function applySimFrame(hourFloat) {
     const dpA = simByteAt(h0, i, 1), dpB = simByteAt(h1, i, 1);
     const fs01 = ((fsA * (1 - frac) + fsB * frac) / 255);
     const depth01 = ((dpA * (1 - frac) + dpB * frac) / 255);
-    const erosion01 = erosionByteAt(i) / 255;
-    riskColor(fs01, depth01, erosion01, tmpColor);
-    colorAttr.setXYZW(i, tmpColor[0], tmpColor[1], tmpColor[2], tmpColor[3]);
+    riskColor(fs01, depth01, tmpColor);
+    colorAttr.setXYZ(i, tmpColor[0], tmpColor[1], tmpColor[2]);
   }
   colorAttr.needsUpdate = true;
 
@@ -259,18 +210,16 @@ function simTick(nowMs) {
   requestAnimationFrame(simTick);
 }
 
-// NOTE: overlay alpha is carried entirely by the per-vertex vec4 colour
-// attribute set in riskColor(). overlayMaterial is a ShaderMaterial with no
-// `opacity` uniform, so assigning overlayMaterial.opacity here would be a
-// no-op -- deliberately omitted rather than left in as a dead line.
 document.getElementById('sim-play').addEventListener('click', () => {
   simPlaying = !simPlaying;
   document.getElementById('sim-play').innerHTML = simPlaying ? '&#10074;&#10074; Pause' : '&#9654; Play';
+  overlayMaterial.opacity = OVERLAY_OPACITY;
   if (simPlaying) { simLastT = null; requestAnimationFrame(simTick); }
 });
 document.getElementById('sim-scrub').addEventListener('input', (e) => {
   simPlaying = false;
   document.getElementById('sim-play').innerHTML = '&#9654; Play';
+  overlayMaterial.opacity = OVERLAY_OPACITY;
   simHour = (parseFloat(e.target.value) / 1000) * N_HOURS;
   applySimFrame(simHour);
 });
@@ -311,7 +260,7 @@ document.getElementById('sim-record').addEventListener('click', () => {
   mediaRecorder.start();
   btn.classList.add('recording');
   btn.innerHTML = '&#9679; Recording...';
-  simHour = 0; simPlaying = true; simLastT = null;
+  simHour = 0; simPlaying = true; simLastT = null; overlayMaterial.opacity = OVERLAY_OPACITY;
   document.getElementById('sim-play').innerHTML = '&#10074;&#10074; Pause';
   requestAnimationFrame(simTick);
 });
@@ -319,14 +268,14 @@ document.getElementById('sim-record').addEventListener('click', () => {
 applySimFrame(0);
 """
 
-NEW_JS = NEW_JS.replace("__SIM_JSON__", str({
+NEW_JS = NEW_JS.replace("__SIM_JSON__", json.dumps({
     "n_hours": sim["n_hours"], "n_nodes": sim["n_nodes"],
     "failed_frac_per_hour": sim["failed_frac_per_hour"],
     "hourly_rain_mm": sim["hourly_rain_mm"],
     "fs_max_display": sim["fs_max_display"],
     "depth_max_display": sim["depth_max_display"],
     "erosion_max_display": sim["erosion_max_display"],
-}).replace("'", '"'))
+}))
 NEW_JS = NEW_JS.replace("__SIM_B64__", sim["b64"])
 NEW_JS = NEW_JS.replace("__SIM_EROSION_B64__", sim["erosion_b64"])
 
@@ -418,7 +367,7 @@ FULL_CSS = r"""<style>
 
   /* ---- timelapse / simulation bottom bar ---- */
   #sim-panel {
-    position:absolute; bottom:10px; left:10px; right:10px;
+    position:absolute; bottom:10px; left:10px; right:250px;
     background:var(--panel); border:1px solid var(--panel-border); border-radius:2px;
     padding:10px 14px; color:var(--text); font-size:11.5px;
   }
@@ -439,13 +388,29 @@ FULL_CSS = r"""<style>
   #sim-caveat { font-size:10px; color:#777; margin-top:6px; line-height:1.5; }
   #sim-legend-row { display:flex; gap:14px; margin-top:6px; font-size:10.5px; color:var(--text-dim); flex-wrap:wrap; }
   .sim-swatch { display:inline-block; width:10px; height:10px; border:1px solid #888; margin-right:3px; vertical-align:middle; }
+
+  #minimap-panel {
+    position:absolute; right:10px; bottom:10px; width:210px;
+    background:var(--panel); border:1px solid var(--panel-border); border-radius:2px;
+    padding:8px; color:var(--text); font-size:10.5px;
+  }
+  #minimap-panel.collapsed #minimap-body { display:none; }
+  #minimap-header { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  #minimap-header h1 { font-size:11px; font-weight:bold; margin:0; }
+  #minimap-toggle {
+    width:18px; height:18px; padding:0; background:#d4d4d2; border:1px solid var(--panel-border);
+    border-radius:2px; color:var(--text); cursor:pointer; display:flex; align-items:center; justify-content:center;
+  }
+  #minimap-body { margin-top:6px; }
+  #minimap-svg { width:100%; height:auto; display:block; background:#dcdcda; border:1px solid #aaa; }
+  #minimap-caption { font-size:9.5px; color:var(--text-dim); margin-top:4px; line-height:1.3; }
 </style>"""
 
 _style_start = html.index("<style>")
 _style_end = html.index("</style>") + len("</style>")
 html = html[:_style_start] + FULL_CSS + html[_style_end:]
 
-with open(OUT_PATH, "w") as f:
+with open(OUT_PATH, "w", encoding="utf-8") as f:
     f.write(html)
 
 print("wrote", OUT_PATH, len(html) / 1e6, "MB")
