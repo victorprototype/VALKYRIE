@@ -1,16 +1,27 @@
+# =============================================================================
+# VALKYRIE | build_dem_3d_viewer.py
+# Stage   : D. Base 3D terrain viewer
+# Purpose : Builds the interactive Three.js terrain viewer as ONE self-contained HTML file:
+#           3D mesh from the DEM plus switchable colour layers (elevation, slope, aspect,
+#           flow, wetness, rainfall, soil estimates...) each with its own legend.
+# Reads   : DEM + derived rasters (+ CHIRPS and SoilGrids if available)
+# Writes  : dem_3d_viewer.html (the 'base viewer')
+# Used by : build_final_with_simulation.py adds the simulation on top of this file
+# =============================================================================
+
 """
 Build an interactive 3D Three.js viewer from a Copernicus GLO-30 DEM + gdaldem
 derivative rasters (hillshade, hillshade-color, color-relief, slope, aspect,
 roughness).
 
-Run this on Kaggle (or anywhere with the input files on disk). It writes a
-single self-contained HTML file you can download and open in any browser --
+Run this anywhere the input files are in the data/ folder (see paths.py). It
+writes a single self-contained HTML file you can open in any browser --
 no server needed.
 
-Usage on Kaggle:
-    python build_dem_3d_kaggle.py
+Usage:
+    python src/build_dem_3d_viewer.py
 
-Edit DATA_DIR / FILES below if your filenames differ.
+Edit FILES below if your filenames differ.
 """
 import base64
 import io
@@ -21,7 +32,12 @@ import numpy as np
 import matplotlib
 from PIL import Image
 
+from paths import DATA_DIR, output_file
+
 try:
+    # The soil and rainfall helpers are optional: if they cannot be imported, the viewer is
+    # still built, just without the precipitation and soil layers. Keep all VALKYRIE
+    # scripts in the same folder so this import succeeds.
     from soil_ptf import (soilgrids_to_fractions, saxton_rawls_hydraulic,
                            usda_texture_class, texture_to_strength, bulk_density_to_unit_weight)
     from resample_to_grid import resample_soilgrids_to_points, resample_chirps_to_points
@@ -29,13 +45,14 @@ try:
 except ImportError:
     _EXTERNAL_DATA_MODULES_AVAILABLE = False
 
+# Disable Pillow's 'decompression bomb' size guard; these rasters are legitimately large.
 Image.MAX_IMAGE_PIXELS = None
 
 # ---------------------------------------------------------------------------
 # Config -- edit these for your environment
 # ---------------------------------------------------------------------------
-DATA_DIR = "/kaggle/input/datasets/thevictorprototype/dem-sim-data"
-OUT_PATH = "/kaggle/working/valkyrie/physics/dem_3d_viewer.html"
+# Input folder = DATA_DIR (imported from paths.py); output = outputs/dem_3d_viewer.html.
+OUT_PATH = output_file("dem_3d_viewer.html")
 
 FILES = {
     "dem": "output_hh.tif",
@@ -79,6 +96,9 @@ NODATA = -9000           # gdaldem slope/aspect/roughness nodata sentinel (<=)
 # (e.g. float64 samples, which Pillow's "F" mode does not support).
 # ---------------------------------------------------------------------------
 def _load_with_rasterio(path):
+    """Preferred reader (needs the optional 'rasterio' package): also returns the
+    geotransform, i.e. the real-world position and pixel size.
+    """
     import rasterio
     with rasterio.open(path) as src:
         arr = src.read(1) if src.count == 1 else np.moveaxis(src.read(), 0, -1)
@@ -87,10 +107,12 @@ def _load_with_rasterio(path):
 
 
 def _load_with_pil(path):
+    """Fallback reader using Pillow. No geotransform available."""
     return np.array(Image.open(path)), None
 
 
 def _load_with_tifffile(path):
+    """Last-resort reader for files Pillow cannot open (for example 64-bit floats)."""
     import tifffile
     return tifffile.imread(path), None
 
@@ -125,6 +147,9 @@ def _resolve_path(filename):
 
 
 def load(filename):
+    """Locate `filename` under DATA_DIR and read it with the first reader that works.
+    Returns (array, geotransform or None).
+    """
     path = _resolve_path(filename)
     try:
         arr, transform = _load_with_rasterio(path)
@@ -154,6 +179,14 @@ def load_optional(filename):
 
 
 def main():
+    """Build the base viewer.
+
+    Steps: 1 load rasters | 2 trim the no-data edge ring | 3 optional hydrology
+    rasters | 4 real-world size of the map | 5 terrain height grid | 6 one colour
+    texture + legend per layer | 7 rainfall and soil layers (if available) |
+    8 JPEG-encode textures | 9 write the HTML.
+    """
+    # STEP 1 - load the DEM and the pre-computed derivative rasters.
     dem, transform = load(FILES["dem"])
     hillshade, _ = load(FILES["hillshade"])
     hillshade_color, _ = load(FILES["hillshade_color"])
@@ -162,11 +195,13 @@ def main():
     aspect, _ = load(FILES["aspect"])
     slope, _ = load(FILES["slope"])
 
+    # STEP 2 - convert to the right types and trim the edge ring on every raster.
     dem = dem.astype(np.float32)
     H, W = dem.shape
     B = BORDER_CROP
 
     def crop(a):
+        """Trim BORDER_CROP pixels from every edge (works for 2-D and 3-D arrays)."""
         return a[B:H - B, B:W - B, ...] if a.ndim == 2 else a[B:H - B, B:W - B, :]
 
     dem = crop(dem)
@@ -203,6 +238,7 @@ def main():
         lon_left = 78.84999998888891 + B * px_w
         lat_top = 30.85000001111111 - B * px_h
 
+    # STEP 4 - real-world size of the map in metres (degrees converted using the mean latitude).
     lat_bottom = lat_top - H * px_h
     lon_right = lon_left + W * px_w
     avg_lat = (lat_top + lat_bottom) / 2
@@ -232,14 +268,17 @@ def main():
     tstep = max(1, round(W / TEXTURE_TARGET_W))
 
     def to_rgb_uint8(arr3):
+        """Down-sample an RGB array to texture resolution and wrap it as an image."""
         return Image.fromarray(arr3[::tstep, ::tstep, :])
 
     def grayscale_to_rgb(arr):
+        """Down-sample a single-band array to texture resolution and return it as a grey RGB image."""
         a = arr[::tstep, ::tstep].astype(np.uint8)
         return Image.fromarray(np.stack([a, a, a], axis=-1))
 
     # ---- legend helpers ----
     def _bar_from_cmap(cmap_name, w=240, h=16):
+        """Legend colour bar: a PNG gradient strip of a matplotlib colour map, as a data URL."""
         xs = np.linspace(0, 1, w)
         cmap = matplotlib.colormaps[cmap_name]
         row = (cmap(xs)[:, :3] * 255).astype(np.uint8)
@@ -278,6 +317,10 @@ def main():
         return f"{v:.2f}"
 
     def colorize(arr, cmap_name, vmin=None, vmax=None, unit="", description=""):
+        """Turn a numeric raster into a colour image with a matplotlib colour map.
+        Values are clipped to [vmin, vmax] (default: 1st-99th percentile); no-data cells
+        become dark grey. Returns (image, legend dict for the on-screen key).
+        """
         a = arr[::tstep, ::tstep].copy()
         mask = a <= NODATA
         valid = a[~mask]
@@ -454,6 +497,8 @@ def main():
             "approx": True,
         }
 
+    # STEP 6 - one texture image (and one legend) for every switchable layer. The three
+    # reference layers first, then terrain derivatives, hydrology, rainfall and soil.
     layers = {}
     legends = {}
 
@@ -571,6 +616,9 @@ def main():
         lon_grid, lat_grid = np.meshgrid(lon_col, lat_row)
 
         def tile_to_full_res(arr_tex):
+            """Repeat each texture-resolution pixel `tstep` times so the array is DEM-sized again;
+            colorize() then strides it back down to exactly the values computed here.
+            """
             tiled = np.repeat(np.repeat(arr_tex, tstep, axis=0), tstep, axis=1)
             out = np.empty((H, W), dtype=arr_tex.dtype)
             out[:min(H, tiled.shape[0]), :min(W, tiled.shape[1])] = tiled[:H, :W]
@@ -631,12 +679,14 @@ def main():
             except Exception as e:
                 print(f"[skip] SoilGrids layers failed: {e}")
 
+    # STEP 8 - compress every layer image to JPEG and encode it as text (base64).
     textures_b64 = {}
     for name, im in layers.items():
         buf = io.BytesIO()
         im.save(buf, format="JPEG", quality=87)
         textures_b64[name] = base64.b64encode(buf.getvalue()).decode("ascii")
 
+    # STEP 9 - fill the HTML template with the data and write the file.
     render_html(meta, heights_b64, textures_b64, OUT_PATH, layer_order=list(layers.keys()), legends=legends)
     print(f"wrote {OUT_PATH}  ({os.path.getsize(OUT_PATH)/1e6:.1f} MB)")
     print(f"grid {gw}x{gh}  extent {width_m/1000:.1f} x {height_m/1000:.1f} km  "
@@ -645,6 +695,9 @@ def main():
 
 
 def render_html(meta, heights_b64, textures_b64, out_path, layer_order, legends):
+    """Assemble the final HTML: layer buttons, map metadata, height grid, textures and
+    legends are substituted into TEMPLATE and written to `out_path`.
+    """
     layer_labels = {
         "hillshade-color": "Shaded relief + color",
         "color-relief": "Elevation color",
@@ -662,6 +715,7 @@ def render_html(meta, heights_b64, textures_b64, out_path, layer_order, legends)
         "soil-friction-angle": "Soil friction angle (est.)",
         "soil-cohesion": "Soil cohesion (est.)",
     }
+    # One button per layer, then JSON copies of the data for the page's JavaScript.
     buttons_html = "\n".join(
         f'<button class="layer-btn{" active" if l == layer_order[0] else ""}" '
         f'data-layer="{l}">{layer_labels[l]}</button>'
@@ -672,6 +726,7 @@ def render_html(meta, heights_b64, textures_b64, out_path, layer_order, legends)
     legends_js = json.dumps({k: {**v, "title": layer_labels.get(k, k)} for k, v in legends.items()})
     default_exagg = meta.get("defaultExagg", 1.6)
 
+    # Replace each __PLACEHOLDER__ in the template with real content.
     template = TEMPLATE
     template = template.replace("__BUTTONS__", buttons_html)
     template = template.replace("__META__", meta_js)
@@ -684,6 +739,11 @@ def render_html(meta, heights_b64, textures_b64, out_path, layer_order, legends)
         f.write(template)
 
 
+# The viewer page itself (HTML + CSS + JavaScript), kept verbatim in the string below.
+# Its JavaScript: decodes the height grid -> builds a Three.js mesh (PlaneGeometry) ->
+# applies the selected layer as a texture -> orbit / pan / zoom controls (mouse and touch)
+# -> vertical-exaggeration slider, wireframe and auto-rotate toggles -> legend panel.
+# The __PLACEHOLDERS__ are filled in by render_html() above.
 TEMPLATE = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1121,5 +1181,6 @@ animate();
 </html>
 """
 
+# Entry point: `python src/build_dem_3d_viewer.py`.
 if __name__ == "__main__":
     main()

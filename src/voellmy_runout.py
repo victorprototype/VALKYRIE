@@ -1,3 +1,13 @@
+# =============================================================================
+# VALKYRIE | voellmy_runout.py
+# Stage   : C. Physics: where failed soil flows (Voellmy runout)
+# Purpose : Simplified grid version of the Voellmy friction model: cells whose Factor of
+#           Safety drops below 1 release a slab of soil that then flows downhill.
+# Reads   : hourly FS grids, elevation, slope, soil friction angle
+# Writes  : debris depth for every hour, total soil released per cell
+# Used by : run_simulation.py
+# =============================================================================
+
 """
 Simplified cellular downslope routing of triggered (FS<1) failures using
 the Voellmy (1955) depth-averaged friction model -- the same rheology used
@@ -27,6 +37,8 @@ CAVEATS:
 """
 import numpy as np
 
+# Constants: gravity, the turbulent-drag coefficient xi, and how many small
+# time-steps are taken inside each simulated hour.
 G = 9.81
 XI_TURBULENT = 500.0  # m/s^2, literature-typical mid-range, UNCALIBRATED
 SUBSTEPS_PER_HOUR = 120  # 30s internal timestep for numerical stability
@@ -41,10 +53,13 @@ def d8_downslope_offsets(elevation, grid_shape):
     offsets = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
     dists = [np.sqrt(2), 1, np.sqrt(2), 1, 1, np.sqrt(2), 1, np.sqrt(2)]
 
+    # For every cell remember the steepest drop found so far and which neighbour it points to.
     best_drop = np.zeros((gh, gw))
     best_di = np.zeros((gh, gw), dtype=np.int8)
     best_dj = np.zeros((gh, gw), dtype=np.int8)
 
+    # Test all 8 neighbours. Diagonal drops are divided by sqrt(2) (longer distance)
+    # so steepness is comparable between straight and diagonal neighbours.
     for (di, dj), dist in zip(offsets, dists):
         # shifted[i,j] := elev[i+di, j+dj] wherever that neighbor is in bounds
         out_i0, out_i1 = max(0, -di), gh - max(0, di)
@@ -77,6 +92,8 @@ def route_failures(fs_series, elevation, slope_rad, friction_deg, grid_shape, n_
     physics, but keeps output in a physically plausible range."""
     gh, gw = grid_shape
     n = gh * gw
+    # STEP 1 - set-up. Dry-friction coefficient mu = tan(friction angle); each cell's
+    # flow direction = its steepest-descent neighbour (target_idx).
     mu = np.tan(np.radians(friction_deg)).reshape(-1)
     slope_flat = slope_rad.reshape(-1)
 
@@ -84,6 +101,7 @@ def route_failures(fs_series, elevation, slope_rad, friction_deg, grid_shape, n_
     di, dj = di.reshape(-1), dj.reshape(-1)
     has_downslope = (drop.reshape(-1) > 0)
 
+    # Row/column index of every cell, used to compute neighbour positions.
     ii, jj = np.meshgrid(np.arange(gh), np.arange(gw), indexing="ij")
     ti = np.clip(ii.reshape(-1) + di, 0, gh - 1)
     tj = np.clip(jj.reshape(-1) + dj, 0, gw - 1)
@@ -99,23 +117,32 @@ def route_failures(fs_series, elevation, slope_rad, friction_deg, grid_shape, n_
         ntj = np.clip(jj.reshape(-1) + ndj, 0, gw - 1)
         neighbor_idx.append(nti * gw + ntj)
 
+    # STEP 2 - state: h = depth of moving debris (m), v = flow speed (m/s),
+    # already_failed = cells that have released their slab, cum_erosion = total released.
     h = np.zeros(n)
     v = np.zeros(n)
     already_failed = np.zeros(n, dtype=bool)
     cum_erosion = np.zeros(n)
     flow_depth_series = np.zeros((n_hours, n), dtype=np.float32)
 
+    # Length of one internal time-step in seconds (30 s).
     dt_sub = 3600.0 / SUBSTEPS_PER_HOUR
 
+    # STEP 3 - march through the simulated hours.
     for hr in range(n_hours):
+        # 3a. Cells whose FS first drops below 1 release failure_depth_m of soil as mobile
+        # debris (each cell only releases once).
         newly_failed = (fs_series[hr] < 1.0) & (~already_failed)
         h[newly_failed] += failure_depth_m
         cum_erosion[newly_failed] += failure_depth_m
         already_failed |= (fs_series[hr] < 1.0)
 
+        # 3b. Many small time-steps per hour keep the speed update numerically stable.
         for _ in range(SUBSTEPS_PER_HOUR):
             moving = h > 1e-4
             if moving.any():
+                # Voellmy balance on every cell that holds debris: gravity pulls it downhill,
+                # dry friction (mu*g*cos) and turbulent drag (g*v^2/xi) resist. Speed never goes below 0.
                 accel = np.zeros(n)
                 drive = G * np.sin(slope_flat)
                 resist_static = mu * G * np.cos(slope_flat)
@@ -124,13 +151,18 @@ def route_failures(fs_series, elevation, slope_rad, friction_deg, grid_shape, n_
                 v[moving] = np.maximum(0.0, v[moving] + accel[moving] * dt_sub)
                 v[~moving] = 0.0
 
+                # Move debris: the share of a cell's depth that crosses into its downhill neighbour
+                # is (distance travelled) / (cell size). Mass is moved, not created or destroyed.
                 dist = v * dt_sub
+                # Approximate grid spacing in metres for this study area (hard-coded).
                 cell_size = 140.0
                 frac_move = np.clip(dist / cell_size, 0, 1)
                 transferred = h * frac_move * moving * has_downslope
                 h = h - transferred
                 np.add.at(h, target_idx, transferred)
 
+            # 3c. Depth cap: anything deeper than max_depth_m is shared equally among the 8
+            # neighbours - a crude stand-in for the sideways spreading D8 routing cannot do.
             overflow_mask = h > max_depth_m
             if overflow_mask.any():
                 excess = np.where(overflow_mask, h - max_depth_m, 0.0)
@@ -139,11 +171,14 @@ def route_failures(fs_series, elevation, slope_rad, friction_deg, grid_shape, n_
                 for nidx in neighbor_idx:
                     np.add.at(h, nidx, share)
 
+        # 3d. Snapshot of debris depth at the end of this hour (what the viewer plays back).
         flow_depth_series[hr] = h.astype(np.float32)
 
     return flow_depth_series, cum_erosion
 
 
+# Self-contained demo on a 20x20 ramp: one failure at hour 2; prints that the total
+# debris depth stays constant (mass conservation).
 if __name__ == "__main__":
     gh, gw = 20, 20
     x, y = np.meshgrid(np.arange(gw), np.arange(gh))

@@ -1,3 +1,14 @@
+# =============================================================================
+# VALKYRIE | build_graph.py
+# Stage   : B. Terrain graph
+# Purpose : Turns the DEM and its derived rasters (slope, aspect, roughness, wetness, flow
+#           accumulation, catchment area) into a graph: one node per grid point, one edge
+#           per 4-neighbour link, each node carrying a vector of physical features.
+# Reads   : DEM + derived .tif rasters (the data/ folder)
+# Writes  : dict with node features, edges and grid size
+# Used by : run_simulation.py (via build_graph()), build_graph_v2.py
+# =============================================================================
+
 """
 Builds a unified mesh-graph from the DEM + derived hydrology rasters, in the
 same node/edge formalism MeshGraphNets uses (Pfaff et al. 2021, Sec. 3):
@@ -7,7 +18,7 @@ same node/edge formalism MeshGraphNets uses (Pfaff et al. 2021, Sec. 3):
 
 This does NOT train anything (no torch here, no network in this sandbox).
 It produces a static graph + feature tensors, saved as .npz, meant to be
-loaded into PyTorch/PyG on Kaggle for the next stage.
+loaded into PyTorch/PyG for the next stage.
 
 CURRENTLY POPULATED node features (from data already available):
   elevation, slope, sin(aspect), cos(aspect), roughness, TWI,
@@ -24,8 +35,12 @@ NOT YET POPULATED (blocked on missing uploads):
 import numpy as np
 from PIL import Image
 
+from paths import DATA_DIR, output_file
+
+# Disable Pillow's 'decompression bomb' size guard; these rasters are legitimately large.
 Image.MAX_IMAGE_PIXELS = None
-SRC = "/kaggle/input/datasets/thevictorprototype/dem-sim-data"
+# Folder that holds the input rasters (the repo's data/ folder; see data/README.md).
+SRC = DATA_DIR
 
 # Same downsample target as the 3D viewer, so this graph lines up 1:1 with
 # what's rendered there if we ever want to cross-reference a node to a
@@ -35,10 +50,22 @@ BORDER_CROP = 6
 
 
 def load(name):
+    """Read one raster from SRC into a NumPy array."""
     return np.array(Image.open(f"{SRC}/{name}"))
 
 
 def build_graph():
+    """Build the terrain graph. Returns a dict with:
+      pos          node positions in metres, shape [N, 2]
+      x            node features, shape [N, F]  (names in feature_names)
+      edge_index   [2, E] source/target node ids of every link
+      edge_attr    [E, 3] relative displacement (dx, dy) and length of every link
+      grid_shape   (rows, cols) of the node grid
+
+    Soil and rainfall feature columns are created here as zeros (placeholders);
+    they are filled in later by build_graph_v2.py or by run_simulation.py.
+    """
+    # Step 1 - load the DEM and the rasters derived from it.
     dem = load("output_hh.tif").astype(np.float32)
     slope = load("viz.hh_slope.tif").astype(np.float32)
     aspect = load("viz.hh_aspect.tif").astype(np.float32)
@@ -48,12 +75,15 @@ def build_graph():
     sca = load("DInf_Specific_Catchment_Area.tif").astype(np.float32)
 
     H, W = dem.shape
+    # Step 2 - trim BORDER_CROP pixels off every edge (gdaldem leaves a no-data ring there).
     B = BORDER_CROP
     crop = lambda a: a[B:H - B, B:W - B]
     dem, slope, aspect, roughness, twi = map(crop, (dem, slope, aspect, roughness, twi))
     flow_accum, sca = map(crop, (flow_accum, sca))
     H, W = dem.shape
 
+    # Step 3 - down-sample: keep every `step`-th pixel so the graph has about 420
+    # columns. This is the same grid the 3D viewer draws, so node i == viewer vertex i.
     step = max(1, round(W / GRAPH_TARGET_W))
     dem_g = dem[::step, ::step]
     slope_g = slope[::step, ::step]
@@ -118,6 +148,7 @@ def build_graph():
     norm_uij = np.linalg.norm(u_ij, axis=1, keepdims=True)
     edge_attr = np.concatenate([u_ij, norm_uij], axis=1).astype(np.float32)  # [E, 3] per MeshGraphNets encoder
 
+    # Final step - hand everything back to the caller.
     return {
         "pos": u_i.reshape(-1, 2),
         "x": x.astype(np.float32),
@@ -130,6 +161,8 @@ def build_graph():
     }
 
 
+# NOTE: this stub is kept only as a record of the original plan. The real
+# derivation lives in soil_ptf.py and is applied by build_graph_v2.py / run_simulation.py.
 def derive_trigrs_params(soilgrids_arrays):
     """
     STUB -- not implemented yet, blocked on soilgrids_mandakini.tif.
@@ -152,6 +185,7 @@ def derive_trigrs_params(soilgrids_arrays):
     raise NotImplementedError("waiting on soilgrids_mandakini.tif")
 
 
+# Running this file directly builds the graph and saves it as unified_graph.npz.
 if __name__ == "__main__":
     graph = build_graph()
     print("nodes:", graph["x"].shape[0], " features/node:", graph["x"].shape[1])
@@ -159,7 +193,7 @@ if __name__ == "__main__":
     print("feature order:", graph["feature_names"])
     print("grid shape:", graph["grid_shape"])
     np.savez_compressed(
-        "/kaggle/working/valkyrie/graph/unified_graph.npz",
+        output_file("unified_graph.npz"),
         pos=graph["pos"], x=graph["x"], edge_index=graph["edge_index"],
         edge_attr=graph["edge_attr"], grid_shape=graph["grid_shape"],
         feature_names=np.array(graph["feature_names"]),

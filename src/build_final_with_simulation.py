@@ -1,3 +1,14 @@
+# =============================================================================
+# VALKYRIE | build_final_with_simulation.py
+# Stage   : D. Final viewer assembly
+# Purpose : Takes the base 3D viewer HTML and injects the simulation: a control bar, the
+#           colour-by-risk overlay, rain particles, playback and video recording. The
+#           result is one self-contained HTML file that opens in any modern browser.
+# Reads   : base dem_3d_viewer.html + simulation_24h.npz
+# Writes  : dem_3d_viewer_simulation.html (the final deliverable)
+# Used by : end of pipeline
+# =============================================================================
+
 """
 Injects the 24h simulation layer + timelapse control bar into the base DEM
 viewer HTML, and restyles the whole UI to a plain, flat engineering-tool
@@ -12,17 +23,23 @@ everything else, and no other step may rely on the base viewer's CSS.
 """
 import json
 from pack_simulation_data import pack_simulation
+from paths import output_file
 
-BASE_HTML_PATH = "/kaggle/working/valkyrie/physics/dem_3d_viewer.html"
-OUT_PATH = "/kaggle/working/valkyrie/physics/dem_3d_viewer_simulation.html"
-SIM_NPZ_PATH = "/kaggle/working/valkyrie/physics/simulation_24h.npz"
+# Paths: base viewer (input), final viewer (output), simulation data (input).
+BASE_HTML_PATH = output_file("dem_3d_viewer.html")
+OUT_PATH = output_file("dem_3d_viewer_simulation.html")
+SIM_NPZ_PATH = output_file("simulation_24h.npz")
 
+# STEP 0 - pack the simulation into compact bytes plus summary series.
 sim = pack_simulation(SIM_NPZ_PATH)
 
+# Load the base viewer as one big string; each step below edits this string.
 with open(BASE_HTML_PATH, encoding="utf-8") as f:
     html = f.read()
 
 # ---------------- simulation / timelapse panel ----------------
+# HTML of the bottom control bar: play/pause, time scrubber, record button,
+# live readouts (hour, rainfall, % destabilised), colour key and the honesty caveat.
 NEW_PANEL_HTML = r"""
 <div id="sim-panel">
   <div id="sim-header">
@@ -56,9 +73,18 @@ NEW_PANEL_HTML = r"""
   </div>
 </div>
 """
+# STEP 1 - insert the control bar just before the 'drag to orbit' hint.
 html = html.replace('<div id="hint">', NEW_PANEL_HTML + '<div id="hint">')
 
 # ---------------- simulation JS ----------------
+# JavaScript of the simulation layer (kept verbatim in the string below). In order:
+#   - decode the packed bytes
+#   - overlay mesh: a transparent copy of the terrain coloured by risk
+#   - riskColor(): FS -> colour (red -> yellow -> green), blended to brown where debris flows
+#   - applySimFrame(): blend two neighbouring hours so playback is smooth, update readouts
+#   - rain particles whose density follows the hourly rainfall
+#   - playback loop (24 h compressed into 30 s), scrubber, collapse button
+#   - video export via canvas.captureStream + MediaRecorder
 NEW_JS = r"""
 // =========================== 24h SIMULATION LAYER ===========================
 const SIM = __SIM_JSON__;
@@ -268,6 +294,7 @@ document.getElementById('sim-record').addEventListener('click', () => {
 applySimFrame(0);
 """
 
+# STEP 2 - fill in the three placeholders (summary numbers, FS/depth bytes, erosion bytes).
 NEW_JS = NEW_JS.replace("__SIM_JSON__", json.dumps({
     "n_hours": sim["n_hours"], "n_nodes": sim["n_nodes"],
     "failed_frac_per_hour": sim["failed_frac_per_hour"],
@@ -290,6 +317,7 @@ html = html[:_last_script] + NEW_JS + "\n" + html[_last_script:]
 # ---------------- full UI restyle (MUST be last) ----------------
 # Replaces the base viewer's entire <style> block. Any earlier step that
 # depended on the old CSS would be clobbered here, so keep this at the end.
+# STEP 3 - new stylesheet: light, flat, 'engineering tool' look for every panel.
 FULL_CSS = r"""<style>
   :root {
     --bg: #1a1a1a; --panel: #e9e9e7; --panel-border: #999;
@@ -410,6 +438,7 @@ _style_start = html.index("<style>")
 _style_end = html.index("</style>") + len("</style>")
 html = html[:_style_start] + FULL_CSS + html[_style_end:]
 
+# STEP 4 - write the final self-contained HTML.
 with open(OUT_PATH, "w", encoding="utf-8") as f:
     f.write(html)
 

@@ -1,3 +1,14 @@
+# =============================================================================
+# VALKYRIE | soil_ptf.py
+# Stage   : A. Soil parameters
+# Purpose : Pedotransfer functions: turns SoilGrids texture (sand/clay) and bulk density
+#           into the soil properties the landslide physics needs (strength, permeability,
+#           weight). These are generic literature-based estimates, not measurements.
+# Reads   : sand %, clay %, bulk density
+# Writes  : cohesion, friction angle, unit weight, Ksat, diffusivity, ...
+# Used by : run_simulation.py, build_graph_v2.py, build_dem_3d_viewer.py
+# =============================================================================
+
 """
 Pedotransfer functions: SoilGrids texture/bulk-density -> TRIGRS parameters.
 
@@ -18,6 +29,9 @@ import numpy as np
 
 
 def soilgrids_to_fractions(sand_gkg, clay_gkg, bdod_cgcm3):
+    """Convert SoilGrids units to ordinary ones: g/kg -> %, cg/cm3 -> g/cm3.
+    Silt is whatever is left after sand and clay (clipped to 0-100 %).
+    """
     sand_pct = sand_gkg / 10.0
     clay_pct = clay_gkg / 10.0
     silt_pct = np.clip(100.0 - sand_pct - clay_pct, 0, 100)
@@ -36,16 +50,21 @@ def saxton_rawls_hydraulic(sand_pct, clay_pct):
     as approximate, and re-derive from the source paper (or run actual
     ROSETTA/Saxton-Rawls software) before using this for anything load-bearing.
     """
+    # Use fractions (0-1), as in the published Saxton-Rawls equations.
     s = sand_pct / 100.0
     c = clay_pct / 100.0
 
+    # Water content at the wilting point (-1500 kPa) and at field capacity (-33 kPa),
+    # both estimated from texture.
     theta_1500 = -0.024 * s + 0.487 * c + 0.006 + 0.005 * (s * c) - 0.013 * (c ** 2)  # ~residual/wilting point
     theta_33 = -0.251 * s + 0.195 * c + 0.011 + 0.006 * (s * c) - 0.027 * (c ** 2) + 0.452 * (s * c)
     theta_33 = np.clip(theta_33, theta_1500 + 0.02, 0.6)
 
+    # Saturated water content = field capacity + extra water held up to full saturation.
     theta_s_minus_33 = 0.278 * s + 0.034 * c + 0.022 - 0.018 * (s * c) - 0.027 * (c ** 2)
     theta_sat = np.clip(theta_33 + theta_s_minus_33, theta_33 + 0.02, 0.65)
 
+    # Residual water content: water the soil keeps even when very dry.
     theta_res = np.clip(theta_1500 * 0.7, 0.01, theta_33 - 0.02)  # rough residual < wilting point
 
     # saturated hydraulic conductivity (mm/hr -> m/s), Saxton-Rawls style form
@@ -71,6 +90,8 @@ def usda_texture_class(sand_pct, silt_pct, clay_pct):
     """Coarse USDA textural triangle classification -- vectorized, simplified
     (rectangular approximation of the true triangle boundaries; adequate for
     picking a strength-parameter bucket, not for cartographic soil mapping)."""
+    # Everything starts as 'loam'; the rules below overwrite it with more specific
+    # classes (later rules win where they overlap).
     cls = np.full(sand_pct.shape, "loam", dtype=object)
     cls = np.where(clay_pct >= 40, "clay", cls)
     cls = np.where((clay_pct >= 27) & (clay_pct < 40) & (sand_pct < 45), "clay_loam", cls)
@@ -97,6 +118,9 @@ TEXTURE_STRENGTH = {
 
 
 def texture_to_strength(texture_class):
+    """Look up cohesion (kPa) and friction angle (degrees) for each texture class
+    from TEXTURE_STRENGTH above.
+    """
     cohesion = np.zeros(texture_class.shape, dtype=np.float32)
     friction = np.zeros(texture_class.shape, dtype=np.float32)
     for cls, (c, phi) in TEXTURE_STRENGTH.items():
@@ -116,9 +140,11 @@ def bulk_density_to_unit_weight(bulk_density_gcm3):
     return (rho_kg_m3 * g / 1000.0).astype(np.float32)  # kN/m^3
 
 
+# Manual check on the full SoilGrids file (uses data/soilgrids_mandakini.tif).
 if __name__ == "__main__":
     from read_soilgrids import read_tiled_lzw_tiff
-    arr = read_tiled_lzw_tiff("/mnt/user-data/uploads/soilgrids_mandakini.tif")
+    from paths import data_file
+    arr = read_tiled_lzw_tiff(data_file("soilgrids_mandakini.tif"))
     sand = arr[:, :, 0].astype(np.float32)
     clay = arr[:, :, 2].astype(np.float32)
     bdod = arr[:, :, 4].astype(np.float32)

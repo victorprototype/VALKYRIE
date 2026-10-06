@@ -1,3 +1,15 @@
+# =============================================================================
+# VALKYRIE | trigrs_physics.py
+# Stage   : C. Physics: rain -> water pressure -> slope stability (TRIGRS)
+# Purpose : The two TRIGRS equations used by VALKYRIE:
+#             (1) transient pore-water pressure after rain infiltrates (Iverson 2000, eq. 1A)
+#             (2) infinite-slope Factor of Safety including that pressure (eq. 18)
+#           Implemented directly from the published equations, not the TRIGRS program.
+# Reads   : terrain slope, soil parameters, hourly rainfall
+# Writes  : pressure head psi (m) and Factor of Safety FS
+# Used by : run_simulation.py
+# =============================================================================
+
 """
 TRIGRS transient infiltration + infinite-slope factor of safety, implementing
 Iverson (2000) / Baum et al. (2008) equations 1A and 18 from the TRIGRS
@@ -16,6 +28,7 @@ scenario run, not a calibrated hazard forecast.
 import numpy as np
 from scipy.special import erfc
 
+# Constants: gravity (m/s2) and unit weight of water (kN/m3).
 G = 9.81
 GAMMA_W = 9.81  # kN/m^3, unit weight of water
 
@@ -39,13 +52,19 @@ def pressure_head_transient(Z, t, slope_rad, Ks, D0, rainfall_intensity_seq, dt_
         "background" steady infiltration rate -- we have no measured value,
         so this is an assumed small fraction, flagged as an assumption)
     """
+    # Step 1 - terms that depend only on slope and soil: cos^2(slope), the background
+    # seepage term beta, and D1 (how fast pressure diffuses through the soil).
     cos2 = np.cos(slope_rad) ** 2
     I_ZLT = steady_flux_frac * Ks
     beta = cos2 - (I_ZLT / np.maximum(Ks, 1e-12))
     D1 = D0 / np.maximum(cos2, 1e-6)
 
+    # Step 2 - starting state before the storm: steady-state pressure head.
+    # Negative above the water table (soil suction), zero at it.
     psi = beta * (Z - water_table_depth_m)
 
+    # Step 3 - add the effect of each hour of rain. Each hour is a block of constant
+    # intensity I_n, built from two step changes (rain switches on, then off).
     n_bins = rainfall_intensity_seq.shape[0]
     dt_s = dt_hours * 3600.0
 
@@ -54,11 +73,14 @@ def pressure_head_transient(Z, t, slope_rad, Ks, D0, rainfall_intensity_seq, dt_
         t_n1 = (n + 1) * dt_s
         I_n = rainfall_intensity_seq[n]
 
+        # Rain block 'switches on' at t_n: extra pressure that builds with time since then.
         if t > t_n:
             tau = t - t_n
             arg = Z / (2.0 * np.sqrt(np.maximum(D1 * tau, 1e-12)))
             psi = psi + 2.0 * (I_n / np.maximum(Ks, 1e-12)) * np.sqrt(D1 * tau) * ierfc(arg)
 
+        # Same block 'switches off' at t_n1: subtract the delayed copy, leaving a pulse of
+        # exactly one hour (Iverson's superposition of step responses).
         if t > t_n1:
             tau = t - t_n1
             arg = Z / (2.0 * np.sqrt(np.maximum(D1 * tau, 1e-12)))
@@ -71,16 +93,20 @@ def pressure_head_transient(Z, t, slope_rad, Ks, D0, rainfall_intensity_seq, dt_
 
 def factor_of_safety(Z, psi, slope_rad, cohesion_kpa, friction_deg, unit_weight_kn_m3):
     """TRIGRS eq. 18, infinite-slope model with pore pressure."""
+    # FS = (friction term) + (cohesion minus pore-pressure term). Rising pressure psi
+    # reduces the second term; FS < 1 means the slope can no longer hold.
     phi = np.radians(friction_deg)
     theta = slope_rad
     numerator = cohesion_kpa - psi * GAMMA_W * np.tan(phi)
     denominator = unit_weight_kn_m3 * Z * np.sin(theta) * np.cos(theta)
+    # Guard against division by zero on perfectly flat or zero-depth cells.
     denominator = np.where(np.abs(denominator) < 1e-6, 1e-6, denominator)
     fs = np.tan(phi) / np.maximum(np.tan(theta), 1e-6) + numerator / denominator
     return fs
 
 
 if __name__ == "__main__":
+    # Run `python trigrs_physics.py` for a self-contained demo (no data files needed).
     # smoke test on synthetic values spanning a plausible parameter range
     n = 5
     slope = np.radians(np.array([10, 20, 30, 40, 50], dtype=np.float64))
