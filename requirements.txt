@@ -1,0 +1,7 @@
+numpy
+scipy
+Pillow
+tifffile
+matplotlib
+# optional: gives the base viewer a real geotransform (falls back to Pillow without it)
+# rasterio
